@@ -36,7 +36,7 @@ Tested devcies:
 | Manufacturer | Devcie |
 | --- | --- |
 | Pytes | E-BOX-48100R-C |
-
+| Pytes | E-BOX-48100V-D (V5) |
 
 Component/Hub
 -------------

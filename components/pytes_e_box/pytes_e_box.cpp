@@ -2,6 +2,7 @@
 #include "esphome/core/log.h"
 #include "esphome/core/helpers.h"
 #include <stdlib.h>
+#include <sstream>
 #include <regex>
 
 namespace esphome {
@@ -28,7 +29,17 @@ void PytesEBoxComponent::dump_config() {
   ESP_LOGCONFIG(TAG, "  Batteries: %d", this->battaries_in_system_);
   ESP_LOGCONFIG(TAG, "  Poll Timeout: %d", this->polling_timeout_);
   //ESP_LOGCONFIG(TAG, "  Command Idle Time: %d", this->polling_timeout_);
+  ESP_LOGCONFIG(TAG, "  Amount of Commands in Queue: %d", this->cmd_queue_.size());
   ESP_LOGCONFIG(TAG, "  Commands in Queue: %d", this->cmd_queue_.size());
+
+  // Log all current commands in the queue
+  std::ostringstream oss;
+  oss << "Commands in Queue:";
+  for (const auto &cmd : this->cmd_queue_) {
+    oss << " [index:" << cmd.index << ", command: \"" << cmd.command << "\"]";
+  }
+  ESP_LOGCONFIG(TAG, "  %s", oss.str().c_str());
+
   LOG_UPDATE_INTERVAL(this);
   if (this->is_failed()) {
     ESP_LOGE(TAG, "Connection with PytesEBox failed!");
@@ -47,13 +58,16 @@ void PytesEBoxComponent::setup() {
     this->add_polling_command_(cmd.c_str(),i,CMD_PWR_INDEX);
     cmd = "bat "+to_string(i);
     this->add_polling_command_(cmd.c_str(),i,CMD_BAT_INDEX);
-  }  
-  if (this->is_ready()) { this->state_ = STATE_IDLE; }
+  }
+  if (this->is_ready()) {
+    this->state_ = STATE_IDLE;
+    ESP_LOGCONFIG(TAG, "Device is ready to receive commands");
+  }
 }
 
 void PytesEBoxComponent::add_polling_command_(const char *command, int _index, ENUMCommand polling_command) {
   for (auto &_command : this->cmd_queue_) {
-    if (_command.command.c_str() == command) { 
+    if (_command.command.c_str() == command) {
       //all ready added, just to be sure we wont take more we need.
       return;
       }
@@ -63,23 +77,23 @@ void PytesEBoxComponent::add_polling_command_(const char *command, int _index, E
   _cmd_.errors = 0;
   _cmd_.index = _index;
   _cmd_.identifier = polling_command;
-  _cmd_.length = strlen(command);  
+  _cmd_.length = strlen(command);
   this->cmd_queue_.push_back(_cmd_);
   this->command_queue_max_++;
 }
 
-uint8_t PytesEBoxComponent::send_command_again() { 
-  if (this->state_ == STATE_WAIT) { 
+uint8_t PytesEBoxComponent::send_command_again() {
+  if (this->state_ == STATE_WAIT) {
     this->buffer_index_read_ = 0;
     this->buffer_index_write_ = 0;
     this->clear_uart_buffer();
     this->write_str(this->cmd_queue_[this->command_queue_position_].command.c_str());
-    this->write_str("\n");  
+    this->write_str("\n");
     this->state_ = STATE_POLL;
     ESP_LOGI(TAG, "Retry command from queue: %s from index: %d (%d)", this->cmd_queue_[this->command_queue_position_].command.c_str(), this->command_queue_position_,this->command_retries_);
     this->command_retries_++;
     return 1;
-  } 
+  }
   return 0;
 }
 
@@ -117,9 +131,12 @@ void PytesEBoxComponent::update() {
 
 /* only 1-line per run, othertwise we will block the component. */
 void PytesEBoxComponent::loop() {
+
+  ESP_LOGVV(TAG, "UART available: %d bytes", this->available());
+
   /** nothing to do, keep chilling */
   if (this->state_ == STATE_IDLE || this->state_ == STATE_WAIT) {
-  return;
+    return;
   }
 
   /** check if we run into a "deathloop" or something is blocking */
@@ -137,13 +154,16 @@ void PytesEBoxComponent::loop() {
 
   /** command queue */
   if (this->state_ == STATE_SEND_NEXT_COMMAND) {
-  if (millis() - this->last_poll_ <= this->command_idle_time_) { return; }  //will only work if the idle_time is >50ms
+  if (millis() - this->last_poll_ <= this->command_idle_time_) {
+    ESP_LOGI(TAG, "Command idle delay active: %d ms elapsed, waiting for %d ms before next command", millis() - this->last_poll_, this->command_idle_time_);
+    return;
+  }
 
     this->command_queue_position_ = (this->command_queue_position_+1) % COMMAND_QUEUE_LENGTH;
-    if (this->command_queue_position_ == this->command_queue_max_) { 
-      this->state_ = STATE_IDLE; 
+    if (this->command_queue_position_ == this->command_queue_max_) {
+      this->state_ = STATE_IDLE;
       ESP_LOGI(TAG, "PytesEBox command queue done.");
-      return; 
+      return;
       }
     if (this->send_next_command_() == 0) {
       ESP_LOGE(TAG, "Command failed: %s",this->cmd_queue_[this->command_queue_position_].command.c_str());
@@ -171,7 +191,7 @@ void PytesEBoxComponent::loop() {
         case CMD_NIL:
         case CMD_ERROR:
         default:
-          this->state_ = STATE_SEND_NEXT_COMMAND;          
+          this->state_ = STATE_SEND_NEXT_COMMAND;
           break;
       }
   }
@@ -208,7 +228,7 @@ void PytesEBoxComponent::loop() {
       }
       if (this->isLineComplete(this->buffer_[buffer_index_read_]) > 0) {
         ESP_LOGVV(TAG, "Command Complete, switch to STATE_COMMAND_COMPLETE");
-        this->state_ = STATE_COMMAND_COMPLETE; 
+        this->state_ = STATE_COMMAND_COMPLETE;
         return;
       }
       buffer_index_read_ = (buffer_index_read_ + 1) % NUM_BUFFERS;
@@ -234,7 +254,7 @@ void PytesEBoxComponent::loop() {
           this->send_command_again();
           //this->state_ = STATE_SEND_NEXT_COMMAND;
           return;
-      }      
+      }
         if (this->isLineComplete(this->buffer_[buffer_index_read_]) > 0) {
         this->state_ = STATE_COMMAND;
         this->buffer_index_read_ = (3) % NUM_BUFFERS;
@@ -257,10 +277,10 @@ void PytesEBoxComponent::loop() {
       this->buffer_index_read_ = (3) % NUM_BUFFERS;
       ESP_LOGD(TAG, "parsed command -> %s [Battery: %i]",this->CommandtoString(_last_cmd).c_str(),
                     this->cmd_queue_[this->command_queue_position_].index);
-      ESP_LOGVV(TAG, "Command Complete, switch to STATE_POLL_DECODED");                    
+      ESP_LOGVV(TAG, "Command Complete, switch to STATE_POLL_DECODED");
       return;
     } else {
-      ESP_LOGE(TAG, "No command parsed: %s ",this->buffer_[0].c_str()); 
+      ESP_LOGE(TAG, "No command parsed: %s ",this->buffer_[0].c_str());
       //this->state_ = STATE_IDLE;
       //this->state_ = STATE_SEND_NEXT_COMMAND;
       //return;
@@ -272,10 +292,10 @@ void PytesEBoxComponent::loop() {
 
   /** pull all the serial data from buffer */
   if (this->state_ == STATE_POLL) {
-    if (this->available() < 0) { 
-      this->state_ = STATE_WAIT; 
-      this->send_command_again(); 
-      return; 
+    if (this->available() < 0) {
+      this->state_ = STATE_WAIT;
+      this->send_command_again();
+      return;
       }
     while (this->available()) {
       static char buffer[MAX_DATA_LINE_LENGTH];
@@ -290,31 +310,31 @@ void PytesEBoxComponent::loop() {
         }
         this->buffer_index_write_ = (this->buffer_index_write_ + 1) % NUM_BUFFERS;
       } // readLine
-    } //while available 
+    } //while available
   }/** Read UART Buffer End*/
 }
 
 void PytesEBoxComponent::processData_batIndexLine(std::string &buffer, int bat_num) {
   if (isdigit(buffer[0])) {
     PytesEBoxListener::bat_index_LineContents l{};
-    
+
     const int parsed = sscanf(                                                                      // NOLINT
       buffer.c_str(),"%d %d %d %7s %7s %7s %7s %d%% %d",                                            // NOLINT
       &l.cell_num, &l.cell_volt, &l.cell_tempr, l.cell_baseState, l.cell_voltState,                 // NOLINT
       l.cell_currState, l.cell_tempState, &l.cell_coulomb, &l.cell_curr);                           // NOLINT
-    
-    
+
+
     if (parsed != 9) {
       ESP_LOGE(TAG, "invalid line: found only %d, should be 9 items. in line %d\n: %s",
                     parsed, l.cell_num, buffer.substr(0, buffer.size() - 2).c_str());
       return;
     }
-      
+
     /*
     if (l.cell_num <= 0) {
         ESP_LOGE(TAG, "invalid cell_num in line %s", buffer.substr(0, buffer.size() - 2).c_str());
     return;
-    } 
+    }
     */
 
     l.bat_num = bat_num;
@@ -349,12 +369,12 @@ void PytesEBoxComponent::processData_pwrLine(std::string &buffer) {
     for (PytesEBoxListener *listener : this->listeners_) {
       listener->on_pwr_line_read(&l);
     }
-  }  
+  }
 }
 
 
 
-void PytesEBoxComponent::processData_pwrIndex(std::string &buffer, int bat_num) {  
+void PytesEBoxComponent::processData_pwrIndex(std::string &buffer, int bat_num) {
 pwr_data_l.bat_num = bat_num;
 int i = this->buffer_index_read_;
 
@@ -373,11 +393,11 @@ int i = this->buffer_index_read_;
     ESP_LOGV(TAG,"%s -> %d",this->buffer_[i].c_str(),pwr_data_l.realCoulomb);
   }
 
-  if (this->buffer_[i].rfind("Total Power In:", 0) == 0) { 
+  if (this->buffer_[i].rfind("Total Power In:", 0) == 0) {
     sscanf(this->buffer_[i].c_str(),"Total Power In: %dAS",&pwr_data_l.totalPowerIn);
     ESP_LOGV(TAG,"%s -> %d",this->buffer_[i].c_str(),pwr_data_l.totalPowerIn);
   }
-  
+
   if (this->buffer_[i].rfind("Work Status:", 0) == 0) {
     sscanf(this->buffer_[i].c_str(),"Work Status: %d",&pwr_data_l.workStatus);
     ESP_LOGV(TAG,"%s -> %d",this->buffer_[i].c_str(),pwr_data_l.workStatus);
@@ -399,7 +419,7 @@ int i = this->buffer_index_read_;
   }
 
   if (this->buffer_[i].rfind("Firm Version:", 0) == 0) {
-    sscanf(this->buffer_[i].c_str()," Firm Version: %[^\n]",pwr_data_l.FirmVersion); 
+    sscanf(this->buffer_[i].c_str()," Firm Version: %[^\n]",pwr_data_l.FirmVersion);
     ESP_LOGV(TAG,"%s -> %s",this->buffer_[i].c_str(),pwr_data_l.FirmVersion);
   }
 
@@ -412,7 +432,7 @@ int i = this->buffer_index_read_;
     sscanf(this->buffer_[i].c_str()," Bat Status: %[^\n]",pwr_data_l.BatStatus);
     ESP_LOGV(TAG,"%s -> %s",this->buffer_[i].c_str(),pwr_data_l.BatStatus);
   }
-  
+
   if (this->buffer_[i].rfind("CMOS Status:", 0) == 0) {
     sscanf(this->buffer_[i].c_str()," CMOS Status: %[^\n]",pwr_data_l.CMOSStatus);
     ESP_LOGV(TAG,"%s -> %s",this->buffer_[i].c_str(),pwr_data_l.CMOSStatus);
@@ -422,17 +442,17 @@ int i = this->buffer_index_read_;
     sscanf(this->buffer_[i].c_str()," DMOS Status: %[^\n]",pwr_data_l.DMOSStatus);
     ESP_LOGV(TAG,"%s -> %s",this->buffer_[i].c_str(),pwr_data_l.DMOSStatus);
   }
-  
+
   if (this->buffer_[i].rfind("Bat Protect ENA :", 0) == 0) {
     sscanf(this->buffer_[i].c_str()," Bat Protect ENA : %[^\n]",pwr_data_l.BatProtectENA);
     ESP_LOGV(TAG,"%s -> %s",this->buffer_[i].c_str(),pwr_data_l.BatProtectENA);
   }
-    
+
   if (this->buffer_[i].rfind("Pwr Protect ENA :", 0) == 0) {
     sscanf(this->buffer_[i].c_str()," Pwr Protect ENA : %[^\n]",pwr_data_l.PwrProtectENA);
     ESP_LOGV(TAG,"%s -> %s",this->buffer_[i].c_str(),pwr_data_l.PwrProtectENA);
   }
-    
+
   if (this->buffer_[i].rfind("Bat Events:", 0) == 0) {
     sscanf(this->buffer_[i].c_str()," Bat Events: %[^\n]",pwr_data_l.BatEvents);
     ESP_LOGV(TAG,"%s -> %s",this->buffer_[i].c_str(),pwr_data_l.BatEvents);
@@ -456,7 +476,7 @@ int i = this->buffer_index_read_;
   //ESP_LOGD(TAG,"%s",this->buffer_[i].c_str());
 
 /** already in pwr
-  if (this->buffer_[i].rfind("Coulomb:", 0) == 0) sscanf(this->buffer_[i].c_str(),"Coulomb: %d%%",&pwr_data_l.coulomb);  
+  if (this->buffer_[i].rfind("Coulomb:", 0) == 0) sscanf(this->buffer_[i].c_str(),"Coulomb: %d%%",&pwr_data_l.coulomb);
   if (this->buffer_[i].rfind("Basic Status:", 0) == 0) sscanf(this->buffer_[i].c_str()," Basic Status: %s",pwr_data_l.BasicStatus);
   if (this->buffer_[i].rfind("Volt Status:", 0) == 0) sscanf(this->buffer_[i].c_str()," Volt Status: %s",pwr_data_l.VoltStatus);
   if (this->buffer_[i].rfind("Current Status:", 0) == 0) sscanf(this->buffer_[i].c_str()," Current Status: %s",pwr_data_l.CurrentStatus);

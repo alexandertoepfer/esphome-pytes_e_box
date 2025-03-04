@@ -393,7 +393,7 @@ void PytesEBoxComponent::processData_pwrLine(std::string &buffer) {
     l.base_st, l.volt_st, l.curr_st, l.temp_st, &l.coulomb, &l.day, &l.month, &l.year, &l.hour,  // NOLINT
     &l.min, &l.sec, l.bv_st, l.bt_st,l.serial_st ,l.devtype_st);                                 // NOLINT
 
-    std::string line = "  Buffer: " + buffer;
+    std::string line = std::string("  Buffer: ") + buffer;
     ESP_LOGI(TAG, line);
 
     if (parsed != 23) {

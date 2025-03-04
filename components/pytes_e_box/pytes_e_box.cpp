@@ -59,6 +59,15 @@ void PytesEBoxComponent::setup() {
     cmd = "bat "+to_string(i);
     this->add_polling_command_(cmd.c_str(),i,CMD_BAT_INDEX);
   }
+
+  // Log all current commands in the queue
+  std::ostringstream oss;
+  oss << "Commands in Queue:";
+  for (const auto &cmd : this->cmd_queue_) {
+    oss << " [index:" << cmd.index << ", command: \"" << cmd.command << "\"]";
+  }
+  ESP_LOGCONFIG(TAG, "  %s", oss.str().c_str());
+
   if (this->is_ready()) {
     this->state_ = STATE_IDLE;
     ESP_LOGCONFIG(TAG, "Device is ready to receive commands");
@@ -80,6 +89,14 @@ void PytesEBoxComponent::add_polling_command_(const char *command, int _index, E
   _cmd_.length = strlen(command);
   this->cmd_queue_.push_back(_cmd_);
   this->command_queue_max_++;
+
+  // Log all current commands in the queue
+  std::ostringstream oss;
+  oss << "Commands in Queue:";
+  for (const auto &cmd : this->cmd_queue_) {
+    oss << " [index:" << cmd.index << ", command: \"" << cmd.command << "\"]";
+  }
+  ESP_LOGCONFIG(TAG, "  %s", oss.str().c_str());
 }
 
 uint8_t PytesEBoxComponent::send_command_again() {
@@ -90,7 +107,11 @@ uint8_t PytesEBoxComponent::send_command_again() {
     this->write_str(this->cmd_queue_[this->command_queue_position_].command.c_str());
     this->write_str("\n");
     this->state_ = STATE_POLL;
-    ESP_LOGI(TAG, "Retry command from queue: %s from index: %d (%d)", this->cmd_queue_[this->command_queue_position_].command.c_str(), this->command_queue_position_,this->command_retries_);
+    ESP_LOGI(TAG, "Retrying command '%s' from index: %d, retry count: %d, at time: %lu ms",
+             this->cmd_queue_[this->command_queue_position_].command.c_str(),
+             this->command_queue_position_,
+             this->command_retries_,
+             millis());
     this->command_retries_++;
     return 1;
   }
@@ -112,6 +133,15 @@ uint8_t PytesEBoxComponent::send_next_command_() {
     this->last_poll_ = millis();
     //this->command_start_millis_ = millis();
     this->state_ = STATE_POLL;
+
+    // Log all current commands in the queue
+    std::ostringstream oss;
+    oss << "Commands in Queue:";
+    for (const auto &cmd : this->cmd_queue_) {
+      oss << " [index:" << cmd.index << ", command: \"" << cmd.command << "\"]";
+    }
+    ESP_LOGCONFIG(TAG, "  %s", oss.str().c_str());
+
     ESP_LOGD(TAG, "Sending command from queue: %s from index: %d", this->cmd_queue_[this->command_queue_position_].command.c_str(), this->command_queue_position_);
     return 1;
   }
@@ -132,7 +162,7 @@ void PytesEBoxComponent::update() {
 /* only 1-line per run, othertwise we will block the component. */
 void PytesEBoxComponent::loop() {
 
-  ESP_LOGVV(TAG, "UART available: %d bytes", this->available());
+  //ESP_LOGI(TAG, "UART available: %d bytes", this->available());
 
   /** nothing to do, keep chilling */
   if (this->state_ == STATE_IDLE || this->state_ == STATE_WAIT) {
@@ -141,9 +171,18 @@ void PytesEBoxComponent::loop() {
 
   /** check if we run into a "deathloop" or something is blocking */
   if (millis() - this->last_poll_ > this->polling_timeout_) {
+      unsigned long elapsed = millis() - this->last_poll_;
       this->last_poll_ = millis();
+      std::ostringstream buffer_dump;
+      for (size_t i = 0; i < NUM_BUFFERS; ++i) {
+        buffer_dump << "[" << i << "]: \"" << this->buffer_[i] << "\" ";
+      }
       const char *command = this->cmd_queue_[this->command_queue_position_].command.c_str();
-      ESP_LOGE(TAG, "timeout command from queue: %s with %d retries", command, this->command_retries_);
+      ESP_LOGE(TAG, "Timeout on command '%s': retry %d, elapsed %lu ms. UART Buffer: %s",
+           this->cmd_queue_[this->command_queue_position_].command.c_str(),
+           this->command_retries_,
+           elapsed,
+           buffer_dump.str().c_str());
       this->clear_uart_buffer();
       //this->command_queue_position_ = (this->command_queue_position_+1) % COMMAND_QUEUE_LENGTH;
       this->state_ = STATE_SEND_NEXT_COMMAND;
@@ -155,7 +194,7 @@ void PytesEBoxComponent::loop() {
   /** command queue */
   if (this->state_ == STATE_SEND_NEXT_COMMAND) {
   if (millis() - this->last_poll_ <= this->command_idle_time_) {
-    ESP_LOGI(TAG, "Command idle delay active: %d ms elapsed, waiting for %d ms before next command", millis() - this->last_poll_, this->command_idle_time_);
+    //ESP_LOGI(TAG, "Command idle delay active: %d ms elapsed, waiting for %d ms before next command", millis() - this->last_poll_, this->command_idle_time_);
     return;
   }
 
@@ -353,6 +392,8 @@ void PytesEBoxComponent::processData_pwrLine(std::string &buffer) {
     &l.bat_num, &l.voltage, &l.current, &l.temperature, &l.tlow, &l.thigh, &l.vlow, &l.vhigh,    // NOLINT
     l.base_st, l.volt_st, l.curr_st, l.temp_st, &l.coulomb, &l.day, &l.month, &l.year, &l.hour,  // NOLINT
     &l.min, &l.sec, l.bv_st, l.bt_st,l.serial_st ,l.devtype_st);                                 // NOLINT
+
+    ESP_LOGI(TAG, "  Buffer: " + buffer.c_str());
 
     if (parsed != 23) {
       ESP_LOGE(TAG, "invalid line: found only %d, should be 23 items. in line %d\n: %s",
